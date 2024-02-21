@@ -1,0 +1,52 @@
+@startuml
+!define Table(name,desc) class name as "desc" << (T,white) >>
+!define primary_key(x) <color:red><b>x</b></color>
+!define foreign_key(x) <b>x</b>
+
+Table(user, "User [User DB]") {
+    * primary_key(id) : int
+    + username : varchar
+    + password : varchar
+}
+
+Table(task, "Task [Tasks DB]") {
+    * primary_key(id) : int
+    * foreign_key(created_by) : int
+    * foreign_key(assigned_to) : int
+    * foreign_key(reviewed_by) : int
+    + title : varchar
+    + description : text
+    + status : int
+}
+
+Table(view, "View [Statistics DB]") {
+    * primary_key(id) : int
+    * foreign_key(task_id) : int
+    + count : int
+}
+
+Table(comment, "Comment [Tasks DB]") {
+    * primary_key(id) : int
+    * foreign_key(task_id) : int
+    * foreign_key(user_id) : int
+    * foreign_key(parent_id) : int
+    + text : text
+    + created_at : timestamp
+}
+
+Table(like, "Like [Statistics DB]") {
+    * primary_key(id) : int
+    * foreign_key(task_id) : int
+    * foreign_key(user_id) : int
+    + created_at : timestamp
+}
+
+user -- task : "User.id=Task.created_by, User.id=Task.assigned_to, User.id=Task.reviewed_by"
+user -- comment : "User.id=Comment.user_id, User.id=Comment.parent_id"
+user -- like : "User.id=Like.user_id"
+
+task -- view : "Task.id=View.task_id"
+task -- like : "Task.id=Like.task_id"
+task -- comment : "Task.id=Comment.task_id"
+
+@enduml
