@@ -1,10 +1,9 @@
 use axum::{
     async_trait,
-    extract::FromRequestParts,
-    extract::State,
+    extract::{FromRequestParts, State},
     http::{request::Parts, StatusCode},
     response::{IntoResponse, Response, Result},
-    routing::post,
+    routing::{get, post},
     Json, RequestPartsExt, Router,
 };
 use axum_extra::headers::authorization::Bearer;
@@ -16,64 +15,26 @@ use jwt_simple::prelude::*;
 use log::{error, info};
 use serde::Deserialize;
 use serde_json::json;
-use std::{sync::Arc, thread::sleep, time::Duration};
-use tokio::sync::RwLock;
-use tokio_postgres::{tls::NoTlsStream, Client, NoTls, Socket};
-
-/// User service
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    /// Number of times to greet
-    #[arg(short = 'H', long, default_value = "0.0.0.0")]
-    host: String,
-
-    /// Number of times to greet
-    #[arg(short, long, default_value = "3000")]
-    port: u16,
-
-    /// User database connection [config](https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html)
-    #[arg(short, long, default_value = "host=localhost user=postgres")]
-    db_config: String,
-}
-
-/// TODO: Bcrypt for passwords, read about db_client (maybe possible to easily avoid rwlock), update spec, submit, read article, setup vpn and chat-gpt
+use std::env;
+use std::{sync::Arc, time::Duration};
+use tokio::time::sleep;
+use tokio_postgres::{Client, NoTls};
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
+    let args = CliArgs::parse();
 
-    let args = Args::parse();
-
-    let db_client: Client;
-    let db_connection: tokio_postgres::Connection<Socket, NoTlsStream>;
-    loop {
-        let result = tokio_postgres::connect(&args.db_config, NoTls).await;
-        match result {
-            Ok(x) => {
-                (db_client, db_connection) = x;
-                break;
-            }
-            Err(x) => {
-                info!("retrying connection to user database: {}", x);
-                sleep(Duration::from_secs(1));
-            }
-        }
-    }
-    info!("connected to user database");
-    tokio::spawn(async move {
-        if let Err(e) = db_connection.await {
-            error!("user_database connection error: {}", e);
-        }
+    let jwt_key = env::var("JWT_KEY")
+        .map(|x| HS256Key::from_bytes(&const_hex::decode(x).unwrap()))
+        .unwrap_or_else(|_| HS256Key::generate());
+    let app_state = Arc::new(AppState {
+        user_database: connect_user_database(&args.db_config).await,
+        jwt_key,
     });
 
-    let jwt_key = HS256Key::generate();
-
-    let app_state = Arc::new(RwLock::new(AppState {
-        user_database: db_client,
-        jwt_key,
-    }));
     let app = Router::new()
+        .route("/", get(root_handler))
         .route("/register", post(register_handler))
         .route("/login", post(login_handler))
         .route("/update", post(update_handler))
@@ -86,19 +47,46 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+async fn connect_user_database(config: &str) -> Client {
+    loop {
+        match tokio_postgres::connect(config, NoTls).await {
+            Ok((client, connection)) => {
+                info!("connect_user_database: connected to user database");
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        error!("user_database connection error: {}", e);
+                    }
+                });
+                return client;
+            }
+            Err(e) => {
+                error!(
+                    "connect_user_database: couldn't connect to user_database: {}. Retrying ...",
+                    e
+                );
+            }
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn root_handler() -> &'static str {
+    info!("root_handler: handling root request");
+    "User service API"
+}
+
 async fn register_handler(
     State(state): State<AppStateRef>,
     Json(auth_info): Json<AuthInfo>,
 ) -> Result<StatusCode, AppError> {
-    info!("register_handler: Handling register request");
+    info!("register_handler: handling register request");
 
+    let password_hash = bcrypt::hash(auth_info.password, 10).unwrap();
     state
-        .read()
-        .await
         .user_database
         .query(
             "INSERT INTO users (username, password) VALUES ($1, $2)",
-            &[&auth_info.username, &auth_info.password],
+            &[&auth_info.username, &password_hash],
         )
         .await
         .map_err(|_| AppError::IncorrectRequest)?;
@@ -109,11 +97,9 @@ async fn login_handler(
     State(state): State<AppStateRef>,
     Json(auth_info): Json<AuthInfo>,
 ) -> Result<Json<AccessToken>, AppError> {
-    info!("login_handler: Handling login request");
+    info!("login_handler: handling login request");
 
     let row = state
-        .read()
-        .await
         .user_database
         .query_one(
             "SELECT password FROM users WHERE username=$1",
@@ -121,14 +107,14 @@ async fn login_handler(
         )
         .await
         .map_err(|_| AppError::NonExistingUser)?;
-    let password: String = row.get(0);
-    if auth_info.password != password {
+    let password_hash: String = row.get(0);
+    if !bcrypt::verify(auth_info.password, &password_hash).unwrap() {
         return Err(AppError::WrongPassword);
     }
 
     let claims = Claims::create(jwt_simple::prelude::Duration::from_hours(2))
         .with_subject(auth_info.username);
-    let token = state.read().await.jwt_key.authenticate(claims).unwrap();
+    let token = state.jwt_key.authenticate(claims).unwrap();
     Ok(Json(AccessToken { token }))
 }
 
@@ -137,56 +123,69 @@ async fn update_handler(
     claims: AppClaims,
     Json(user_info): Json<UserInfo>,
 ) -> Result<StatusCode, AppError> {
-    info!("update_handler: Handling update request");
+    info!("update_handler: handling update request");
 
     let username = claims.username;
+    let date_of_birth = match user_info.date_of_birth {
+        Some(x) => Some(
+            NaiveDate::parse_from_str(&x, "%Y-%m-%d").map_err(|_| AppError::IncorrectDateFormat)?,
+        ),
+        None => None,
+    };
 
-    let mut state_lock = state.write().await;
-    let tx = state_lock.user_database.transaction().await.unwrap();
-    if let Some(first_name) = user_info.first_name {
-        tx.query(
-            "UPDATE users SET first_name=$1 WHERE username=$2",
-            &[&first_name, &username],
+    state
+        .user_database
+        .query(
+            "UPDATE 
+                users 
+            SET 
+                first_name=COALESCE($1, first_name),
+                last_name=COALESCE($2, last_name),
+                date_of_birth=COALESCE($3, date_of_birth),
+                email=COALESCE($4, email),
+                phone_number=COALESCE($5, phone_number)
+            WHERE
+                username=$6",
+            &[
+                &user_info.first_name,
+                &user_info.last_name,
+                &date_of_birth,
+                &user_info.email,
+                &user_info.phone_number,
+                &username,
+            ],
         )
         .await
         .map_err(|_| AppError::IncorrectRequest)?;
-    }
-    if let Some(last_name) = user_info.last_name {
-        tx.query(
-            "UPDATE users SET last_name=$1 WHERE username=$2",
-            &[&last_name, &username],
-        )
-        .await
-        .map_err(|_| AppError::IncorrectRequest)?;
-    }
-    if let Some(date_of_birth) = user_info.date_of_birth {
-        let date = NaiveDate::parse_from_str(&date_of_birth, "%Y-%m-%d")
-            .map_err(|_| AppError::IncorrectDateFormat)?;
-        tx.query(
-            "UPDATE users SET date_of_birth=$1 WHERE username=$2",
-            &[&date, &username],
-        )
-        .await
-        .map_err(|_| AppError::IncorrectRequest)?;
-    }
-    if let Some(email) = user_info.email {
-        tx.query(
-            "UPDATE users SET email=$1 WHERE username=$2",
-            &[&email, &username],
-        )
-        .await
-        .map_err(|_| AppError::IncorrectRequest)?;
-    }
-    if let Some(phone_number) = user_info.phone_number {
-        tx.query(
-            "UPDATE users SET phone_number=$1 WHERE username=$2",
-            &[&phone_number, &username],
-        )
-        .await
-        .map_err(|_| AppError::IncorrectRequest)?;
-    }
-    tx.commit().await.unwrap();
+
     Ok(StatusCode::OK)
+}
+
+/// User service
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct CliArgs {
+    /// Service hostname
+    #[arg(short = 'H', long, default_value = "0.0.0.0")]
+    host: String,
+
+    /// Service port
+    #[arg(short, long, default_value = "3000")]
+    port: u16,
+
+    /// User database connection [config](https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html)
+    #[arg(short, long, default_value = "host=localhost user=postgres")]
+    db_config: String,
+}
+
+struct AppState {
+    user_database: tokio_postgres::Client,
+    jwt_key: HS256Key,
+}
+type AppStateRef = Arc<AppState>;
+
+struct AppClaims {
+    username: String,
 }
 
 #[async_trait]
@@ -203,30 +202,12 @@ impl FromRequestParts<AppStateRef> for AppClaims {
             .await
             .map_err(|_| AppError::InvalidToken)?;
         let jwt_claims = state
-            .read()
-            .await
             .jwt_key
             .verify_token::<NoCustomClaims>(bearer.token(), None)
             .map_err(|_| AppError::InvalidToken)?;
         Ok(AppClaims {
             username: jwt_claims.subject.ok_or(AppError::InvalidToken)?,
         })
-    }
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let (status, error_message) = match self {
-            AppError::InvalidToken => (StatusCode::BAD_REQUEST, "Invalid token"),
-            AppError::NonExistingUser => (StatusCode::BAD_REQUEST, "User doesn't exist"),
-            AppError::WrongPassword => (StatusCode::FORBIDDEN, "Wrong password"),
-            AppError::IncorrectRequest => (StatusCode::BAD_REQUEST, "Incorrect request"),
-            AppError::IncorrectDateFormat => (StatusCode::BAD_REQUEST, "Incorrect date format. Expected YYYY-MM-DD"),
-        };
-        let body = Json(json!({
-            "error": error_message,
-        }));
-        (status, body).into_response()
     }
 }
 
@@ -239,14 +220,23 @@ enum AppError {
     IncorrectDateFormat,
 }
 
-struct AppState {
-    user_database: tokio_postgres::Client,
-    jwt_key: HS256Key,
-}
-type AppStateRef = Arc<RwLock<AppState>>;
-
-struct AppClaims {
-    username: String,
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            AppError::InvalidToken => (StatusCode::FORBIDDEN, "Invalid token"),
+            AppError::NonExistingUser => (StatusCode::BAD_REQUEST, "User doesn't exist"),
+            AppError::WrongPassword => (StatusCode::FORBIDDEN, "Wrong password"),
+            AppError::IncorrectRequest => (StatusCode::BAD_REQUEST, "Incorrect request"),
+            AppError::IncorrectDateFormat => (
+                StatusCode::BAD_REQUEST,
+                "Incorrect date format. Expected YYYY-MM-DD",
+            ),
+        };
+        let body = Json(json!({
+            "error": error_message,
+        }));
+        (status, body).into_response()
+    }
 }
 
 #[derive(Deserialize)]

@@ -1,11 +1,11 @@
-ARG TARGET_DEFAULT=x86_64-unknown-linux-musl
+ARG TARGET_DEFAULT=x86_64-unknown-linux-gnu
 
-FROM clux/muslrust:1.76.0-stable AS builder
+FROM rust:1.76.0 AS builder
 
 ARG TARGET_DEFAULT
 ENV TARGET=${TARGET_DEFAULT}
 
-RUN ln -s /bin/g++ /bin/musl-g++
+# RUN ln -s /bin/g++ /bin/musl-g++
 RUN apt-get update -y && apt-get install -y cmake clang
 
 RUN rustup target add "$TARGET"
@@ -13,9 +13,9 @@ RUN rustup target add "$TARGET"
 COPY . /app
 WORKDIR /app
 
-RUN cargo build --release --locked --target "$TARGET"
+RUN cargo build --release --target "$TARGET"
 
-FROM scratch
+FROM ubuntu:22.04
 
 ARG TARGET_DEFAULT
 ENV TARGET=${TARGET_DEFAULT}
