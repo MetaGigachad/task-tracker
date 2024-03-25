@@ -1,0 +1,103 @@
+openapi: "3.0.3"
+info:
+  title: "User Service API"
+  description: "Service for authentication and working with user data"
+  version: "1.0"
+servers:
+  - url: "http://localhost:3000"
+    description: "Localhost deploy for testing"
+paths:
+  /register:
+    post:
+      summary: Registers user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthInfo' 
+      responses:
+        "200":
+          description: "User was registered"
+        "400":
+          description: "Incorrect request"
+  /login:
+    post:
+      summary: Returns auth token for user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthInfo'
+      responses:
+        "200":
+          description: "Token issued"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessToken'
+        "400":
+          description: "User doesn't exist or incorrect request"
+        "403":
+          description: "Wrong password"
+  /update:
+    post:
+      summary: Update user info
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserInfo' 
+      responses:
+        "200":
+          description: "User info was updated"
+        "400":
+          description: "Incorrect request"
+        "403":
+          description: "Invalid access token"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    AuthInfo:
+      type: object
+      properties:
+        username:
+          type: string
+          example: "john"
+        password:
+          type: string
+          example: "abcd1234"
+      required:
+        - username
+        - password
+    UserInfo:
+      type: object
+      properties:
+        first_name:
+          type: string
+          example: "John"
+        last_name:
+          type: string
+          example: "Doe"
+        date_of_birth:
+          type: string
+          example: "2000-01-01"
+        email:
+          type: string
+          example: "johndoe@domain.com"
+        phone_number:
+          type: string
+          example: "+123456789"
+    AccessToken:
+      type: object
+      properties:
+        token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiSm9obiBEb2UifQ.cQqH22q5vySsCWWLRvKia_xinA76Klveja8wuyG6XcA"
