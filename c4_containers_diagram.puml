@@ -1,0 +1,21 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/latest/C4_Container.puml
+
+Person(user, "User", "Пользователь трекера задач")
+Container(authService, "Auth Service", "Go", "Отвечает за клиентское API, регистрацию и аутентификацию пользователей")
+ContainerDb(userDatabase, "User DB", "PostgreSQL", "Хранит информацию о пользователях, сессионные ключи")
+Container(statisticsService, "Statistics Service", "gRPC", "Обрабатывает и сохраняет статистику")
+ContainerDb(statisticsDatabase, "Statistics DB", "ClickHouse", "Хранит статистику о лайках и просмотрах")
+Container(tasksService, "Tasks Service", "gRPC", "Хранит информацию о задачах и комментариях на них")
+ContainerDb(tasksDatabase, "Tasks DB", "PostgreSQL", "Хранит задачи, информацию о них и комментарии на них")
+Container(messageBroker, "Message Broker", "Kafka", "Очередь для сообщений в сервис статистики")
+
+Rel(user, authService, "Вызов методов", "REST API")
+Rel(authService, userDatabase, "Запись и чтение данных о пользователе", "SQL")
+Rel(authService, tasksService, "Вызов метода", "gRPC")
+Rel(authService, statisticsService, "Вызов метода", "gRPC")
+Rel(tasksService, messageBroker, "Отправляет статистику", "Protobuf")
+Rel(messageBroker, statisticsService, "Перенаправляет статистику", "Protobuf")
+Rel(statisticsService, statisticsDatabase, "Запись и чтение статистики", "SQL")
+Rel(tasksService, tasksDatabase, "Запись и чтение данных о задачах", "SQL")
+@enduml
