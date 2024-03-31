@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+option go_package = "./internal/proto";
+
+package tasks_service;
+
+import "google/protobuf/timestamp.proto";
+
+service TasksService {
+    rpc CreateTask(CreateTaskRequest) returns (TaskResponse);
+    rpc GetTask(GetTaskRequest) returns (TaskResponse);
+    rpc UpdateTask(UpdateTaskRequest) returns (TaskResponse);
+    rpc DeleteTask(DeleteTaskRequest) returns (TaskResponse);
+    rpc GetTaskPage(GetTaskPageRequest) returns (TaskPageResponse);
+}
+
+message CreateTaskRequest {
+    string user_id = 1;
+    string title = 2;
+    string description = 3;
+}
+
+message GetTaskRequest {
+    string user_id = 1;
+    string task_id = 2;
+}
+
+message UpdateTaskRequest {
+    string user_id = 1;
+    string task_id = 2;
+    optional string new_title = 3;
+    optional string new_description = 4;
+}
+
+message DeleteTaskRequest {
+    string user_id = 1;
+    string task_id = 2;
+}
+
+message GetTaskPageRequest {
+    string user_id = 1;
+    int32 start_id = 2;
+    int32 page_size = 3;
+}
+
+message TaskResponse {
+    oneof response {
+        Task task = 1;
+        Error error = 2;
+    }
+}
+
+message TaskPageResponse {
+    oneof response {
+        TaskPage task_page = 1;
+        Error error = 2;
+    }    
+}
+
+enum TaskStatus {
+    Open = 0;
+    InProgress = 1;
+    PendingReview = 2;
+    Testing = 3;
+    Completed = 4;
+    Cancelled = 5;  
+}
+
+message Task {
+    string id = 1;
+    google.protobuf.Timestamp created_at = 2;
+    string title = 3;
+    string description = 4;
+    TaskStatus status = 5;
+}
+
+message Error {
+    int32 code = 1;
+    string message = 2;
+}
+
+message TaskPage {
+    repeated Task tasks = 1;
+}
