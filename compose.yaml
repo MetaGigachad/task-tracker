@@ -1,0 +1,24 @@
+services:
+  user_database:
+    image: postgres:16.2
+    container_name: user_database
+    shm_size: 128mb
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - user_database:/data/postgres
+      - ./user_database:/docker-entrypoint-initdb.d
+  user_service:
+    build: ./user_service
+    container_name: user_service
+    command: ["--port", "${USER_SERVICE_PORT}", "--db-config", "host=user_database user=postgres password=${POSTGRES_PASSWORD}"]
+    environment:
+      RUST_LOG: info
+      JWT_KEY: ${JWT_KEY}
+    depends_on:
+      - user_database
+    ports:
+      - ${USER_SERVICE_PORT}:${USER_SERVICE_PORT}
+volumes:
+  user_database:
