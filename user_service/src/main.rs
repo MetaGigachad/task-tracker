@@ -1,24 +1,22 @@
+mod auth;
+mod common;
+mod proto;
+mod tasks;
+
 use axum::{
-    async_trait,
-    extract::{FromRequestParts, State},
-    http::{request::Parts, StatusCode},
-    response::{IntoResponse, Response, Result},
     routing::{get, post},
-    Json, RequestPartsExt, Router,
+    Router,
 };
-use axum_extra::headers::authorization::Bearer;
-use axum_extra::headers::Authorization;
-use axum_extra::TypedHeader;
-use chrono::NaiveDate;
 use clap::Parser;
+use common::AppState;
 use jwt_simple::prelude::*;
 use log::{error, info};
-use serde::Deserialize;
-use serde_json::json;
+use proto::tasks_service::tasks_service_client::TasksServiceClient;
 use std::env;
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tokio_postgres::{Client, NoTls};
+use tonic::transport::Channel;
 
 #[tokio::main]
 async fn main() {
@@ -30,14 +28,22 @@ async fn main() {
         .unwrap_or_else(|_| HS256Key::generate());
     let app_state = Arc::new(AppState {
         user_database: connect_user_database(&args.db_config).await,
+        tasks_service: tokio::sync::RwLock::new(
+            connect_tasks_service(args.tasks_service_host).await,
+        ),
         jwt_key,
     });
 
     let app = Router::new()
         .route("/", get(root_handler))
-        .route("/register", post(register_handler))
-        .route("/login", post(login_handler))
-        .route("/update", post(update_handler))
+        .route("/register", post(auth::register_handler))
+        .route("/login", post(auth::login_handler))
+        .route("/update", post(auth::update_handler))
+        .route("/createTask", post(tasks::create_task_handler))
+        .route("/getTask", post(tasks::get_task_handler))
+        .route("/updateTask", post(tasks::update_task_handler))
+        .route("/deleteTask", post(tasks::delete_task_handler))
+        .route("/getTaskPage", post(tasks::get_task_page_handler))
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", args.host, args.port))
@@ -70,95 +76,27 @@ async fn connect_user_database(config: &str) -> Client {
     }
 }
 
+async fn connect_tasks_service(host: String) -> TasksServiceClient<Channel> {
+    loop {
+        match TasksServiceClient::connect(host.clone()).await {
+            Ok(client) => {
+                info!("connect_tasks_service: connected to tasks_service");
+                return client;
+            }
+            Err(e) => {
+                error!(
+                    "connect_tasks_service: couldn't connect to tasks_service: {}. Retrying ...",
+                    e
+                );
+            }
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
 async fn root_handler() -> &'static str {
     info!("root_handler: handling root request");
     "User service API"
-}
-
-async fn register_handler(
-    State(state): State<AppStateRef>,
-    Json(auth_info): Json<AuthInfo>,
-) -> Result<StatusCode, AppError> {
-    info!("register_handler: handling register request");
-
-    let password_hash = bcrypt::hash(auth_info.password, 10).unwrap();
-    state
-        .user_database
-        .query(
-            "INSERT INTO users (username, password) VALUES ($1, $2)",
-            &[&auth_info.username, &password_hash],
-        )
-        .await
-        .map_err(|_| AppError::IncorrectRequest)?;
-    Ok(StatusCode::OK)
-}
-
-async fn login_handler(
-    State(state): State<AppStateRef>,
-    Json(auth_info): Json<AuthInfo>,
-) -> Result<Json<AccessToken>, AppError> {
-    info!("login_handler: handling login request");
-
-    let row = state
-        .user_database
-        .query_one(
-            "SELECT password FROM users WHERE username=$1",
-            &[&auth_info.username],
-        )
-        .await
-        .map_err(|_| AppError::NonExistingUser)?;
-    let password_hash: String = row.get(0);
-    if !bcrypt::verify(auth_info.password, &password_hash).unwrap() {
-        return Err(AppError::WrongPassword);
-    }
-
-    let claims = Claims::create(jwt_simple::prelude::Duration::from_hours(2))
-        .with_subject(auth_info.username);
-    let token = state.jwt_key.authenticate(claims).unwrap();
-    Ok(Json(AccessToken { token }))
-}
-
-async fn update_handler(
-    State(state): State<AppStateRef>,
-    claims: AppClaims,
-    Json(user_info): Json<UserInfo>,
-) -> Result<StatusCode, AppError> {
-    info!("update_handler: handling update request");
-
-    let username = claims.username;
-    let date_of_birth = match user_info.date_of_birth {
-        Some(x) => Some(
-            NaiveDate::parse_from_str(&x, "%Y-%m-%d").map_err(|_| AppError::IncorrectDateFormat)?,
-        ),
-        None => None,
-    };
-
-    state
-        .user_database
-        .query(
-            "UPDATE 
-                users 
-            SET 
-                first_name=COALESCE($1, first_name),
-                last_name=COALESCE($2, last_name),
-                date_of_birth=COALESCE($3, date_of_birth),
-                email=COALESCE($4, email),
-                phone_number=COALESCE($5, phone_number)
-            WHERE
-                username=$6",
-            &[
-                &user_info.first_name,
-                &user_info.last_name,
-                &date_of_birth,
-                &user_info.email,
-                &user_info.phone_number,
-                &username,
-            ],
-        )
-        .await
-        .map_err(|_| AppError::IncorrectRequest)?;
-
-    Ok(StatusCode::OK)
 }
 
 /// User service
@@ -176,87 +114,8 @@ struct CliArgs {
     /// User database connection [config](https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html)
     #[arg(short, long, default_value = "host=localhost user=postgres")]
     db_config: String,
-}
 
-struct AppState {
-    user_database: tokio_postgres::Client,
-    jwt_key: HS256Key,
-}
-type AppStateRef = Arc<AppState>;
-
-struct AppClaims {
-    username: String,
-}
-
-#[async_trait]
-impl FromRequestParts<AppStateRef> for AppClaims {
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppStateRef,
-    ) -> Result<Self, Self::Rejection> {
-        // Extract the token from the authorization header
-        let TypedHeader(Authorization(bearer)) = parts
-            .extract::<TypedHeader<Authorization<Bearer>>>()
-            .await
-            .map_err(|_| AppError::InvalidToken)?;
-        let jwt_claims = state
-            .jwt_key
-            .verify_token::<NoCustomClaims>(bearer.token(), None)
-            .map_err(|_| AppError::InvalidToken)?;
-        Ok(AppClaims {
-            username: jwt_claims.subject.ok_or(AppError::InvalidToken)?,
-        })
-    }
-}
-
-#[derive(Debug)]
-enum AppError {
-    InvalidToken,
-    NonExistingUser,
-    WrongPassword,
-    IncorrectRequest,
-    IncorrectDateFormat,
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let (status, error_message) = match self {
-            AppError::InvalidToken => (StatusCode::FORBIDDEN, "Invalid token"),
-            AppError::NonExistingUser => (StatusCode::BAD_REQUEST, "User doesn't exist"),
-            AppError::WrongPassword => (StatusCode::FORBIDDEN, "Wrong password"),
-            AppError::IncorrectRequest => (StatusCode::BAD_REQUEST, "Incorrect request"),
-            AppError::IncorrectDateFormat => (
-                StatusCode::BAD_REQUEST,
-                "Incorrect date format. Expected YYYY-MM-DD",
-            ),
-        };
-        let body = Json(json!({
-            "error": error_message,
-        }));
-        (status, body).into_response()
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthInfo {
-    username: String,
-    password: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UserInfo {
-    first_name: Option<String>,
-    last_name: Option<String>,
-    date_of_birth: Option<String>,
-    email: Option<String>,
-    phone_number: Option<String>,
-}
-
-#[derive(Serialize)]
-struct AccessToken {
-    token: String,
+    /// Hostname of tasks_service
+    #[arg(short, long, default_value = "tasks_service:50051")]
+    tasks_service_host: String,
 }

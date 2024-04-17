@@ -5,14 +5,16 @@ services:
     shm_size: 128mb
     restart: always
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${USER_POSTGRES_PASSWORD}
     volumes:
       - user_database:/data/postgres
       - ./user_database:/docker-entrypoint-initdb.d
   user_service:
-    build: ./user_service
+    build: 
+      context: .
+      dockerfile: ./user_service/Dockerfile
     container_name: user_service
-    command: ["--port", "${USER_SERVICE_PORT}", "--db-config", "host=user_database user=postgres password=${POSTGRES_PASSWORD}"]
+    command: ["--port", "${USER_SERVICE_PORT}", "--db-config", "host=user_database user=postgres password=${USER_POSTGRES_PASSWORD}", "--tasks-service-host", "http://tasks_service:${TASKS_SERVICE_PORT}"]
     environment:
       RUST_LOG: info
       JWT_KEY: ${JWT_KEY}
@@ -20,5 +22,33 @@ services:
       - user_database
     ports:
       - ${USER_SERVICE_PORT}:${USER_SERVICE_PORT}
+  tasks_database:
+    image: postgres:16.2
+    container_name: tasks_database
+    shm_size: 128mb
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: ${TASKS_POSTGRES_PASSWORD}
+    volumes:
+      - tasks_database:/data/postgres
+      - ./tasks_database:/docker-entrypoint-initdb.d
+  tasks_service:
+    build: ./tasks_service
+    container_name: tasks_service
+    command: ["--port", "${TASKS_SERVICE_PORT}", "--db-config", "host=tasks_database user=postgres password=${TASKS_POSTGRES_PASSWORD}"]
+    depends_on:
+      - tasks_database
+    ports:
+      - ${TASKS_SERVICE_PORT}:${TASKS_SERVICE_PORT}
+  grpcui:
+    profiles:
+      - debug
+    image: wongnai/grpcui:master
+    restart: always
+    ports:
+      - 8080:8080
+    environment:
+      - GRPCUI_SERVER=tasks_service:${TASKS_SERVICE_PORT}
 volumes:
   user_database:
+  tasks_database:

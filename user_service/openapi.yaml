@@ -59,6 +59,116 @@ paths:
           description: "Incorrect request"
         "403":
           description: "Invalid access token"
+  /createTask:
+    post:
+      summary: Create task for user
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest' 
+      responses:
+        "200":
+          description: "Task was created"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task' 
+        "400":
+          description: "Incorrect request"
+        "403":
+          description: "Invalid access token"
+  /getTask:
+    post:
+      summary: Retrieves the task for user
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetTaskRequest' 
+      responses:
+        "200":
+          description: "Task is found"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task' 
+        "400":
+          description: "Incorrect request"
+        "403":
+          description: "Invalid access token"
+  /updateTask:
+    post:
+      summary: Updates task for user
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest' 
+      responses:
+        "200":
+          description: "Task is successfully updated"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task' 
+        "400":
+          description: "Incorrect request"
+        "403":
+          description: "Invalid access token"
+  /deleteTask:
+    post:
+      summary: Deletes task for user
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteTaskRequest' 
+      responses:
+        "200":
+          description: "Task was deleted"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task' 
+        "400":
+          description: "Incorrect request"
+        "403":
+          description: "Invalid access token"
+  /getTaskPage:
+    post:
+      summary: Gets page of tasks starting from start_id (sorted by creation time)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetTaskPageRequest' 
+      responses:
+        "200":
+          description: "Page successfully retrieved"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPage' 
+        "400":
+          description: "Incorrect request"
+        "403":
+          description: "Invalid access token"
 components:
   securitySchemes:
     BearerAuth:
@@ -101,3 +211,94 @@ components:
         token:
           type: string
           example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiSm9obiBEb2UifQ.cQqH22q5vySsCWWLRvKia_xinA76Klveja8wuyG6XcA"
+      required:
+        - token
+    CreateTaskRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          example: "Fix bug in assembly code"
+        description:
+          type: string
+          example: "There is a bug in proj/code.asm, fix it"
+      required:
+        - title
+        - description
+    GetTaskRequest:
+      type: object
+      properties:
+        task_id:
+          type: string
+          example: "zPMPqzjM0Fw"
+      required:
+        - task_id
+    UpdateTaskRequest:
+      type: object
+      properties:
+        task_id:
+          type: string
+          example: "zPMPqzjM0Fw"
+        new_title:
+          type: string
+          example: "Fix bug in assembly code"
+        new_description:
+          type: string
+          example: "There is a bug in proj/code.asm, fix it"
+      required:
+        - task_id
+    DeleteTaskRequest:
+      type: object
+      properties:
+        task_id:
+          type: string
+          example: "zPMPqzjM0Fw"
+      required:
+        - task_id
+    GetTaskPageRequest:
+      type: object
+      properties:
+        start_id:
+          type: number
+          example: 0
+        page_size:
+          type: number
+          example: 20
+      required:
+        - start_id
+        - page_size
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "zPMPqzjM0Fw"
+        created_at:
+          type: string
+          example: "2004-10-19 10:23:54+02"
+        title:
+          type: string
+          example: "Fix bug in assembly code"
+        description:
+          type: string
+          example: "There is a bug in proj/code.asm, fix it"
+        status:
+          type: string
+          enum: [Open, InProgress, PendingReview, Testing, Completed, Cancelled]
+          example: "Open"
+      required:
+        - id
+        - created_at
+        - title
+        - description
+        - status
+    TaskPage:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+      required:
+       - tasks
+        
